@@ -1,3 +1,7 @@
+# This branch is for the TAF project data
+
+The initial dataset has 1720 frames from 4 viewpoints. It is a video of a teacher performing some simple ballet poses.
+
 # 3D pose and volumetric reconstruction
 
 Here we describe the procedure to execute our reconstruction software.
