@@ -1,3 +1,11 @@
+"""
+Progress:
+
+I have to change the code to read our own calibration file. From lines 282+.
+
+I think the calibration files from Mohamed are in OpenCV format.
+"""
+
 import open3d as o3d
 import cv2 as cv
 import numpy as np
@@ -10,7 +18,48 @@ from ctypes import *
 import time
 import copy
 from utils import LineMesh
+import argparse
 
+parser = argparse.ArgumentParser(description='Process input.')
+parser.add_argument('--vis_open3d', action='store_true')
+parser.add_argument('--vis_opencv', action='store_true')
+parser.add_argument('--vis_debug', action='store_true')
+
+args = parser.parse_args()
+
+
+def my_load_calib(path):   
+    
+    def load_intrinsic(path):
+        cv_file = cv.FileStorage(path, cv.FILE_STORAGE_READ)
+        camera_matrix = cv_file.getNode("K").mat()
+        dist_matrix = cv_file.getNode("D").mat()
+
+        cv_file.release()
+        return [camera_matrix, dist_matrix]
+
+    def load_extrinsic(path):
+        cv_file = cv.FileStorage(path, cv.FILE_STORAGE_READ)
+        R_matrix = cv_file.getNode("R").mat()
+        t_matrix = cv_file.getNode("t").mat()
+
+        cv_file.release()
+        return [R_matrix, t_matrix]
+
+    intrinsic = path + "/intrinsic/cam.cal"
+    extrinsic = path + "/extrinsic/extr.cal"
+
+    camera_matrix, dist_matrix = load_intrinsic(intrinsic)
+    R, t = load_extrinsic(extrinsic)
+    #R = np.linalg.inv(R)
+
+    pp = camera_matrix[0,2]/3, camera_matrix[1,2]/3
+    fl = camera_matrix[0,0]/3, camera_matrix[1,1]/3
+    centre = np.squeeze(np.asarray(t))
+
+    rotation = quat.from_rotation_matrix(R)
+
+    return camera_matrix, pp, fl, R, centre, rotation
 
 def get_pts_2d_and_cams(mobile_captures):
 
@@ -61,7 +110,8 @@ def compute_reprojection_error(pts_3d, camera_params, mobile_captures):
                         [0, fy, py],
                         [0, 0, 1]])
 
-        P = np.dot(K, np.c_[R.T, - np.dot(R.T, C)])
+        #P = np.dot(K, np.c_[R.T, - np.dot(R.T, C)])
+        P = np.dot(K, np.c_[R, C])
 
         pts_2d = np.dot(P, np.vstack((pts_3d, np.ones((1, pts_3d.shape[1])))))
 
@@ -81,13 +131,13 @@ def compute_reprojection_error(pts_3d, camera_params, mobile_captures):
     return np.sum(reproj_error) / n_cams
 
 
-def project(pts_3d, camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_cam_indices, viz=0):
+def project(pts_3d, camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_cam_indices, title, viz=0):
 
     PTS_2D = np.empty((0, 2))
     n_cams = len(mobile_captures.keys())
 
     for c in range(n_cams):
-
+        print("C", c)
         fx, fy = camera_params[c, :2]
         px, py = camera_params[c, 2:4]
         R = quat.as_rotation_matrix(quat.quaternion(*camera_params[c, 4:8]))
@@ -102,7 +152,8 @@ def project(pts_3d, camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_ca
                         [0, fy, py],
                         [0, 0, 1]])
 
-        P = np.dot(K, np.c_[R.T, - np.dot(R.T, C)])
+        #P = np.dot(K, np.c_[R.T, - np.dot(R.T, C)])
+        P = np.dot(K, np.c_[R, C])
 
         pts_2d = np.dot(P, np.vstack((_pts_3d, np.ones((1, _pts_3d.shape[1])))))
 
@@ -111,18 +162,22 @@ def project(pts_3d, camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_ca
         PTS_2D = np.vstack((PTS_2D, pts_2d.T))
 
         cam_key = c + 1  # todo: substitute this by taking the key directly from the key list
-        if viz == cam_key or viz == -1:
-            plt.figure()
-            _img = copy.deepcopy(mobile_captures[cam_key]['im'])
-            _img[:, :, 0] = mobile_captures[cam_key]['im'][:, :, 2]
-            _img[:, :, 2] = mobile_captures[cam_key]['im'][:, :, 0]
-            plt.imshow(_img)
-            plt.plot(mobile_captures[cam_key]['person_pose'][::3], mobile_captures[cam_key]['person_pose'][1::3],
-                     'o', color='green', markersize=4)
-            plt.plot(pts_2d[0, :], pts_2d[1, :],
-                     'o', color='red', markersize=4)
-            plt.draw()
-            plt.pause(.001)
+        
+        #if viz == cam_key or viz == -1:
+        plt.figure()
+        _img = copy.deepcopy(mobile_captures[cam_key]['im'])
+        _img[:, :, 0] = mobile_captures[cam_key]['im'][:, :, 2]
+        _img[:, :, 2] = mobile_captures[cam_key]['im'][:, :, 0]
+        plt.imshow(_img)
+        plt.plot(mobile_captures[cam_key]['person_pose'][::3], mobile_captures[cam_key]['person_pose'][1::3],
+                    'o', color='green', markersize=4)
+        plt.plot(pts_2d[0, :], pts_2d[1, :],
+                    'o', color='red', markersize=4)
+        plt.draw()
+        plt.title(title)
+        plt.pause(1)
+        plt.close()
+
 
     return PTS_2D.T
 
@@ -131,28 +186,30 @@ def project(pts_3d, camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_ca
 ############### MAIN
 ###################################################
 
-do_cv_viz = False
-do_o3d_viz = True
-do_white_background = False
-do_save_results = False
-do_debug_reprojection = False
+do_cv_viz = args.vis_opencv
+do_o3d_viz = args.vis_open3d
+do_debug_reprojection = args.vis_debug
 
-dataset_root_folder = '/home/poiesi/data/datasets/4dm/' # substitute this with the correct path to the dataset
-open_pose_data = '../data/poses'
+do_white_background = False
+do_save_results = True
+
+assert (not (do_cv_viz is True and do_o3d_viz is True)), 'Choose either OpenCV or Open3D visualisation, not both!'
+
+
+dataset_root_folder = '/media/weber/Ubuntu2/ubuntu2/Human_Pose/QMUL-data/four_viewpoints_ballet/scenario-3' # substitute this with the correct path to the dataset
+open_pose_data = dataset_root_folder + "/openpose-results"
 frame_res_det_folder = '../results/skeleton'
+camera_calib_folder = '/media/weber/Ubuntu2/ubuntu2/Human_Pose/QMUL-data/four_viewpoints_ballet/calib/'
 if not os.path.isdir(frame_res_det_folder):
     os.makedirs(frame_res_det_folder)
 
-dataset_name = 'easy' # choose between easy, medium, hard
+#dataset_name = 'easy' # choose between easy, medium, hard
+cameras = {1: 'point1',
+           2: 'point2',
+           3: 'point3',
+           4: 'point4'}
 
-mobiles = {1: '4846a8bc1c6f287a725111d3f60f2385',
-           2: 'cc74017ee8081c07917f03332f92ede6',
-           3: 'd7ec5aa63b32a4878ca037e2a7fec252',
-           4: '172673834746e6d591b4b00599c98ffa',
-           5: '378d43cea3872b0551900a15c92e0ec4',
-           6: '642a3152b339263852fffe527a9de347'}
-
-mobile_host = 1
+mobile_host = 1 # what is this?
 
 line_mesh_radius = 0.02
 
@@ -169,13 +226,17 @@ libmysba.sba.argtypes = [c_char_p, c_char_p, POINTER(c_double), c_int, c_int,
                          POINTER(c_float), POINTER(c_float), POINTER(c_float)]
 
 
-frame_list = glob.glob(os.path.join(dataset_root_folder, dataset_name, mobiles[mobile_host], '*.jpg'))
+# get the sorted frames TODO (sort better)
+frame_list = glob.glob(os.path.join(dataset_root_folder, 'images', cameras[mobile_host], '*.png'))
 frame_list.sort()
+print("\n", frame_list, "\n")
 
-number_of_frames = int(os.path.splitext(os.path.basename(frame_list[-1]))[0]) + 1
+number_of_frames = len(frame_list)
+print("Number of frames:", number_of_frames)
+#number_of_frames = int(os.path.splitext(os.path.basename(frame_list[-1]))[0]) + 1
 
-start_frame = 0
-end_frame = number_of_frames
+start_frame = 1
+end_frame = number_of_frames + 1
 
 # CAMERA VIZ MODEL
 mobile_viz_points = 0.4 * np.array([[-0.5, -0.5, 1], [0.5, -0.5, 1], [-0.5, 0.5, 1], [0.5, 0.5, 1], [0, 0, 0]])
@@ -229,7 +290,8 @@ if do_o3d_viz:
 
 # init mobile captures
 mobile_captures = dict()
-for mobile_number, mobile in mobiles.items():
+for mobile_number, mobile in cameras.items():
+    print("Mobile number:", mobile_number, "| Mobile:", mobile)
     mobile_captures[mobile_number] = {'im': [],
                                       'position': [],
                                       'rotation': [],
@@ -249,7 +311,9 @@ go_to_frame = 0
 
 fr_counter = 0
 for fr in range(start_frame, end_frame):
-
+    
+    print("frame:", fr)
+    
     if fr < go_to_frame:
         continue
 
@@ -262,49 +326,67 @@ for fr in range(start_frame, end_frame):
     ####################
     t_load_data = time.time()
 
-    for mobile_number, mobile in mobiles.items():
+    for mobile_number, mobile in cameras.items():
 
-        jpg_file = os.path.join(dataset_root_folder, dataset_name, mobile, '%04d.jpg' % fr)
-        json_file = os.path.join(dataset_root_folder, dataset_name, mobile, '%04d.bin' % fr)
+        png_file = os.path.join(dataset_root_folder, 'images', mobile, 'out{}.png'.format(fr))
+        #json_file = os.path.join(dataset_root_folder, mobile, '%04d.bin' % fr) # xavier: camera data
+        
+        ### read our calibration file
+        K, pp, fl, R, centre, rotation = my_load_calib(os.path.join(camera_calib_folder, mobile))
+        ###
 
-        open_pose_file = os.path.join(open_pose_data, dataset_name + '_' + mobile + '_%04d_keypoints.json' % fr)
+        open_pose_file = os.path.join(open_pose_data, mobile, 'keypoints', 'out{}_keypoints.json'.format(fr))
 
-        if not os.path.isfile(jpg_file):
+        if not os.path.isfile(png_file):
             flag_skip_frame = 1
             continue
 
-        im = cv.imread(jpg_file)
+        im = cv.imread(png_file)
 
         # mobile pose
-        with open(json_file, 'r') as jf:
-            json_text = jf.read()
-            meta = json.loads(json_text)
+        # with open(json_file, 'r') as jf:
+        #     json_text = jf.read()
+        #     meta = json.loads(json_text)
 
-        pp = np.asarray([meta['principalPoint']['x'], meta['principalPoint']['y']])
-        fl = np.asarray([meta['focalLength']['x'], meta['focalLength']['y']])
+        #pp = np.asarray([meta['principalPoint']['x'], meta['principalPoint']['y']])
+        #fl = np.asarray([meta['focalLength']['x'], meta['focalLength']['y']])
 
-        rotation = quat.quaternion(meta['rotation']['w'],
-                                   -meta['rotation']['x'],
-                                   meta['rotation']['y'],
-                                   -meta['rotation']['z'])
+        # rotation = quat.quaternion(meta['rotation']['w'],
+        #                            -meta['rotation']['x'],
+        #                            meta['rotation']['y'],
+        #                            -meta['rotation']['z'])
 
-        centre = np.asarray([meta['position']['x'],
-                             -meta['position']['y'],
-                             meta['position']['z']])
+        # centre = np.asarray([meta['position']['x'],
+        #                      -meta['position']['y'],
+        #                      meta['position']['z']])
 
-        # http://ksimek.github.io/2012/08/22/extrinsic/
+        #http://ksimek.github.io/2012/08/22/extrinsic/
         K = np.asarray([[fl[0], 0, pp[0]],
                         [0, fl[1], pp[1]],
                         [0, 0, 1]])
 
-        R = quat.as_rotation_matrix(rotation)
+        #R = quat.as_rotation_matrix(rotation)
+
+        # quat_float = quat.as_float_array(rotation)
+        # print(quat_float)
+        # quat_float = [quat_float[0], -quat_float[1], quat_float[2], -quat_float[3]]
+        # rotation = quat.as_quat_array(quat_float)
+        # print(quat_float)
+
+        print("\nPrinting Camera Calibration Results")
+        print("K:", K)
+        print("pp:", pp)
+        print("fl:", fl)
+        print("R:", R)
+        print("centre:", centre)
+        print("rotation:", rotation)
+        print("\ns")
 
         mobile_captures[mobile_number]['im'] = im
-
         mobile_captures[mobile_number]['principal_point'] = pp
         mobile_captures[mobile_number]['focal_length'] = fl
-        mobile_captures[mobile_number]['quaternion'] = rotation
-        mobile_captures[mobile_number]['rotation'] = R
+        mobile_captures[mobile_number]['quaternion'] = rotation # rotation matrix as quat
+        mobile_captures[mobile_number]['rotation'] = R # rotation matrix
         mobile_captures[mobile_number]['position'] = centre
         mobile_captures[mobile_number]['K'] = K
 
@@ -331,6 +413,8 @@ for fr in range(start_frame, end_frame):
 
             bbox_centre = [(np.min(x[x > 0]) + np.max(x[x > 0])) / 2,
                            (np.min(y[y > 0]) + np.max(y[y > 0])) / 2]
+            
+            # NOTE - be careful: I believe these are hard-coded image dimensions
             inv_dist_from_centre.append(1 / np.linalg.norm([bbox_centre[0] - 640/2, bbox_centre[1] - 480/2]))
 
             area_occupied.append((np.max(x[x > 0]) - np.min(x[x > 0])) * (np.max(y[y > 0]) - np.min(y[y > 0])))
@@ -352,7 +436,9 @@ for fr in range(start_frame, end_frame):
                 _im = cv.line(_im, tuple(kpts[limb[0]].astype(int)), tuple(kpts[limb[1]].astype(int)), [0, 255*0.906, 255], 3, lineType=cv.LINE_AA)
 
             if do_save_results:
-                cv.imwrite(os.path.join('../results/img_poses', dataset_name, '{:04d}_{}.png'.format(fr_counter, mobile)), _im)
+                if not os.path.exists('../results/img_poses'):
+                    os.mkdir('../results/img_poses')
+                cv.imwrite(os.path.join('../results/img_poses', '{:04d}_{}.png'.format(fr_counter, mobile)), _im)
 
             cv.imshow(imshow_tag, _im)
             cv.waitKey(1)
@@ -367,7 +453,9 @@ for fr in range(start_frame, end_frame):
     ####################
     t_ba = time.time()
 
-    mobile_combs = [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+    #mobile_combs = [(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+    #mobile_combs = [(1, 2), (2, 3), (3, 4), (4,2), (4,1), (3,1)] 
+    mobile_combs = [(1, 2), (1,3), (1,4), (2, 3), (2, 4), (3,4)] 
 
     pts_3d_multiple_views = np.zeros((5, 25, len(mobile_combs)))
 
@@ -378,20 +466,31 @@ for fr in range(start_frame, end_frame):
         m1 = comb[0]
         m2 = comb[1]
 
+        # K1 = mobile_captures[m1]['K'] # intrinsics
+        # R1 = mobile_captures[m1]['rotation'].T # rotation matrix (tranposed)
+        # T1 = - np.dot(R1, mobile_captures[m1]['position']) # ?
+
+        # K2 = mobile_captures[m2]['K']
+        # R2 = mobile_captures[m2]['rotation'].T
+        # T2 = - np.dot(R2, mobile_captures[m2]['position'])
+
+        # P1 = np.dot(K1, np.c_[R1, T1]) # projection matrix of camera 1
+        # P2 = np.dot(K2, np.c_[R2, T2]) # projection matrix of camera 2
+
         K1 = mobile_captures[m1]['K']
-        R1 = mobile_captures[m1]['rotation'].T
-        T1 = - np.dot(R1, mobile_captures[m1]['position'])
+        R1 = mobile_captures[m1]['rotation']
+        T1 = np.expand_dims(mobile_captures[m1]['position'], axis=1)
 
         K2 = mobile_captures[m2]['K']
-        R2 = mobile_captures[m2]['rotation'].T
-        T2 = - np.dot(R2, mobile_captures[m2]['position'])
+        R2 = mobile_captures[m2]['rotation']
+        T2 = np.expand_dims(mobile_captures[m2]['position'], axis=1)
 
-        P1 = np.dot(K1, np.c_[R1, T1])
-        P2 = np.dot(K2, np.c_[R2, T2])
+        P1 = np.dot(K1, np.hstack((R1, T1)))
+        P2 = np.dot(K2, np.hstack((R2, T2)))
 
         # 2d points from 2 different views
-        pts_2d_1 = np.asarray([mobile_captures[m1]['person_pose'][::3], mobile_captures[m1]['person_pose'][1::3]])
-        pts_2d_2 = np.asarray([mobile_captures[m2]['person_pose'][::3], mobile_captures[m2]['person_pose'][1::3]])
+        pts_2d_1 = np.asarray( [mobile_captures[m1]['person_pose'][::3], mobile_captures[m1]['person_pose'][1::3]] )
+        pts_2d_2 = np.asarray( [mobile_captures[m2]['person_pose'][::3], mobile_captures[m2]['person_pose'][1::3]] )
 
         # triangulate points from different views
         pts_3d = cv.triangulatePoints(P1, P2, pts_2d_1, pts_2d_2)
@@ -430,11 +529,11 @@ for fr in range(start_frame, end_frame):
     # debug reprojection error
     if do_debug_reprojection:
         print('before ba')
-        pts_2d_proj = project(pts_3d, camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_cam_indices,
+        pts_2d_proj = project(pts_3d, camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_cam_indices, title='before ba',
                               viz=do_debug_reprojection)
 
     idx_to_bundle = np.where(pts_3d[0, :] > 0)
-
+    
     # prepare point file
     pts_file = open('pts.txt', 'w')
     for p in idx_to_bundle[0]:
@@ -454,10 +553,12 @@ for fr in range(start_frame, end_frame):
     # todo: this can be substituted by preparing the vector to pass to the function directly
     cam_file = open('cams.txt', 'w')
     for cam in camera_params:
-        q = quat.quaternion(*cam[4:8]).inverse()
+        #q = quat.quaternion(*cam[4:8]).inverse()
+        q = quat.quaternion(*cam[4:8])
         R = quat.as_rotation_matrix(q)
         C = cam[8:]
-        T = - np.dot(R, C)
+        #T = - np.dot(R, C)
+        T = C
         cam_file.write('%.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f %.5f\n' %
                        (cam[0], cam[2], cam[3], cam[1]/cam[0], 0, q.w, q.x, q.y, q.z, T[0], T[1], T[2]))
     cam_file.close()
@@ -497,9 +598,11 @@ for fr in range(start_frame, end_frame):
 
     # tranform R and T in the original format
     for c in range(len(mobile_captures.keys())):
-        q = quat.quaternion(*new_camera_params[c, 4:8]).inverse()
+        #q = quat.quaternion(*new_camera_params[c, 4:8]).inverse()
+        q = quat.quaternion(*new_camera_params[c, 4:8])
         R = quat.as_rotation_matrix(q)
-        C = - np.dot(R, new_camera_params[c, 8:])
+        #C = - np.dot(R, new_camera_params[c, 8:])
+        C = new_camera_params[c, 8:] # NOTE
         new_camera_params[c, 4:8] = quat.as_float_array(q)
         new_camera_params[c, 8:] = C
 
@@ -513,12 +616,12 @@ for fr in range(start_frame, end_frame):
 
     if do_debug_reprojection:
         print('after ba')
-        pts_2d_proj = project(pts_3d, new_camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_cam_indices,
+        pts_2d_proj = project(pts_3d, new_camera_params, mobile_captures, pts_2d_3d_indices, pts_2d_cam_indices, title='after ba',
                               viz=do_debug_reprojection)
 
     if do_o3d_viz:
 
-        for mobile_number, mobile in mobiles.items():
+        for mobile_number, mobile in cameras.items():
 
             # visualise cameras
             camidx = mobile_number - 1
@@ -564,7 +667,7 @@ for fr in range(start_frame, end_frame):
         vis.update_renderer()
 
         if do_save_results:
-            vis.capture_screen_image(os.path.join(frame_res_det_folder, dataset_name, '{:04d}.png'.format(fr_counter, fr)))
+            vis.capture_screen_image(os.path.join(frame_res_det_folder, '{:04d}.png'.format(fr_counter, fr)))
     fr_counter += 1
 
     print('All: %.2fms - load_data: %.2fms - ba: %.2fms' %
